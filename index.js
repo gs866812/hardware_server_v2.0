@@ -118,8 +118,13 @@ async function run() {
     const database = client.db("hardwareShop");
     const debtDB = client.db("debtMaintain");
     const borrowerCollections = debtDB.collection("borrowerList");
+    const lenderCollections = debtDB.collection("lenderList");
+
     const currentBalanceCollections = debtDB.collection("currentBalanceList");
+    const lenderBalanceCollections = debtDB.collection("lenderBalanceList");
+
     const allTransactions = debtDB.collection("transactionList");
+    const allLenderTransactions = debtDB.collection("lenderTransactionList");
 
 
 
@@ -3500,14 +3505,46 @@ async function run() {
 
     // get borrower list
     app.get("/borrowerList", verifyToken, async (req, res) => {
+      const page = parseInt(req.query.page);
+      const size = parseInt(req.query.size);
+      const search = req.query.search || "";
+
+      let numericSearch = parseFloat(search);
+      if (isNaN(numericSearch)) {
+        numericSearch = null;
+      }
+
+
       const userMail = req.query["userEmail"];
       const email = req.user["email"];
 
       if (userMail !== email) {
         return res.status(401).send({ message: "Forbidden Access" });
       }
-      const result = await borrowerCollections.find().sort({ _id: -1 }).toArray();
-      res.send(result);
+
+      const query = search
+        ? {
+          $or: [
+            {
+              borrowerName: { $regex: new RegExp(search, "i") },
+            },
+            { serial: numericSearch ? numericSearch : { $exists: false } },
+            { contactNumber: { $regex: new RegExp(search, "i") } },
+            { address: { $regex: new RegExp(search, "i") } },
+          ],
+        }
+        : {};
+
+      const result = await borrowerCollections
+        .find(query)
+        .skip((page - 1) * size)
+        .limit(size)
+        .sort({ _id: -1 })
+        .toArray();
+
+
+      const count = await borrowerCollections.countDocuments(query);
+      res.send({ result, count });
     });
 
     // get debt balance ................................................
@@ -3643,6 +3680,263 @@ async function run() {
     });
 
     // .......................................................................
+
+    //...................................... Lend system start here..........................................................
+    // post lender
+    app.post("/lend/lenderList", async (req, res) => {
+      const lenderInfo = req.body;
+      const { contactNumber } = lenderInfo;
+      const isLenderExist = await lenderCollections.findOne({
+        contactNumber,
+      });
+
+      //add borrower list with serial
+      const recentLender = await lenderCollections
+        .find()
+        .sort({ serial: -1 })
+        .limit(1)
+        .toArray();
+
+      let nextSerial = 10; // Default starting serial number
+      if (recentLender.length > 0 && recentLender[0].serial) {
+        nextSerial = recentLender[0].serial + 1;
+      }
+      const newLenderInfo = { ...lenderInfo, serial: nextSerial, crBalance: 0, drBalance: 0, statements: [] };
+
+      if (isLenderExist) {
+        res.json("Mobile number already exists");
+      } else {
+        const result = await lenderCollections.insertOne(newLenderInfo);
+        res.send(result);
+      }
+    });
+
+    // get lender____________________________________________________________________
+    app.get("/lenderList", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+      const result = await lenderCollections.find().sort({ _id: -1 }).toArray();
+      res.send(result);
+    });
+
+    // Lending money__________________________
+    app.post("/lend/givingMoney", async (req, res) => {
+      try {
+        const { date, rcvAmount, serial, note, method, userName } = req.body;
+
+
+
+        // update main balance
+        const existingBalanceDoc = await mainBalanceCollections.findOne();
+        if (existingBalanceDoc.mainBalance >= rcvAmount) {
+          // Update existing document by adding newBalance to mainBalance
+          const updatedMainBalance = existingBalanceDoc.mainBalance - rcvAmount;
+          await mainBalanceCollections.updateOne(
+            {},
+            { $set: { mainBalance: updatedMainBalance } }
+          );
+        } else {
+          // Insert new document with newBalance as mainBalance
+          return res.json("Insufficient balance");
+        };
+
+        const lender = await lenderCollections.findOne({ serial });
+
+        if (!lender) {
+          return res.status(404).json({ message: "Lender not found" });
+        }
+
+        await lenderCollections.updateOne(
+          { serial: lender.serial },
+          {
+            $inc: { crBalance: rcvAmount },
+            $push: {
+              statements: {
+                date,
+                amount: rcvAmount,
+                paymentMethod: method,
+                note,
+                userName,
+              },
+            },
+          }
+        );
+
+
+
+
+        //add transaction list with serial
+        const recentSerialTransaction = await transactionCollections
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextSerial = 10; // Default starting serial number
+        if (
+          recentSerialTransaction.length > 0 &&
+          recentSerialTransaction[0].serial
+        ) {
+          nextSerial = recentSerialTransaction[0].serial + 1;
+        }
+
+        await transactionCollections.insertOne({
+          serial: nextSerial,
+          totalBalance: rcvAmount,
+          note,
+          date,
+          type: "LEND",
+          userName,
+        });
+
+
+
+        //add lend transaction list with serial
+        const recentLendSerialTransaction = await allLenderTransactions
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextDebtSerial = 10; // Default starting serial number
+        if (
+          recentLendSerialTransaction.length > 0 &&
+          recentLendSerialTransaction[0].serial
+        ) {
+          nextDebtSerial = recentLendSerialTransaction[0].serial + 1;
+        }
+
+        await allLenderTransactions.insertOne({
+          serial: nextDebtSerial,
+          receiver: lender.lenderName,
+          rcvAmount,
+          note,
+          date,
+          type: 'OUT',
+          userName,
+        });
+
+        // Respond with success message and optional updated data
+        res.status(200).json({
+          message: "Money given successfully",
+        });
+      } catch (error) {
+
+        res.status(500).json({ error: "An error occurred while processing the request" });
+      }
+    });
+
+    // Lending return
+    app.post("/lend/returnMoney", async (req, res) => {
+      try {
+        const { date, payAmount, returnNote, serial, returnMethod, userName } = req.body;
+
+        const lender = await lenderCollections.findOne({
+          serial,
+        });
+
+        if (payAmount > lender.crBalance) {
+          return res.send("Can't receive over payment");
+        }
+
+        if (!lender) {
+          return res.status(404).json({ message: "Lender not found" });
+        }
+
+        // update currentBalanceCollections
+
+        const existingBalance = await mainBalanceCollections.findOne({});
+
+        if (existingBalance) {
+          await mainBalanceCollections.updateOne(
+            {},
+            {
+              $inc: { mainBalance: payAmount },
+            }
+          );
+        }
+
+        await lenderCollections.updateOne(
+          { serial: lender.serial },
+          {
+            $inc: { crBalance: -payAmount, drBalance: payAmount },
+            $push: {
+              statements: {
+                date,
+                payAmount,
+                paymentMethod: returnMethod,
+                note: returnNote,
+                userName,
+              },
+            },
+          }
+        );
+
+
+        //add transaction list with serial
+        const recentSerialTransaction = await transactionCollections
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextSerial = 10; // Default starting serial number
+        if (
+          recentSerialTransaction.length > 0 &&
+          recentSerialTransaction[0].serial
+        ) {
+          nextSerial = recentSerialTransaction[0].serial + 1;
+        }
+
+        await transactionCollections.insertOne({
+          serial: nextSerial,
+          totalBalance: payAmount,
+          note: returnNote,
+          date,
+          type: "LEND IN",
+          userName,
+        });
+
+
+
+        //add transaction list with serial
+        const recentDebtSerialTransaction = await allLenderTransactions
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextDebtSerial = 10; // Default starting serial number
+        if (
+          recentDebtSerialTransaction.length > 0 &&
+          recentDebtSerialTransaction[0].serial
+        ) {
+          nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
+        }
+
+        await allTransactions.insertOne({
+          serial: nextDebtSerial,
+          receiver: lender.lenderName,
+          balance: payAmount,
+          note: returnNote,
+          date,
+          type: 'IN',
+          userName,
+        });
+
+        // Respond with success message and optional updated data
+        res.send('Success');
+
+      } catch (error) {
+
+        res.status(500).json({ error: "An error occurred while processing the request" });
+      }
+    });
+
 
     // const negativeEntries = await stockCollections
     //   .find({ purchaseQuantity: { $lt: 0 } })
