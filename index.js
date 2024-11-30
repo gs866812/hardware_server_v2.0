@@ -1040,11 +1040,19 @@ async function run() {
     // ..........................................................................................
     app.post("/getCustomer/:contact", async (req, res) => {
       const mobileNumber = req.params.contact;
-      const result = await customerCollections.findOne({
+
+      const customer = await customerCollections.findOne({
         contactNumber: mobileNumber,
       });
-      res.send(result);
+
+      const customerDue = await customerDueCollections.findOne({
+        contactNumber: mobileNumber,
+      });
+
+      res.send({ customer, customerDue });
     });
+
+
     // ..........................................................................................
     app.post("/getSupplier/:contact", async (req, res) => {
       const mobileNumber = req.params.contact;
@@ -1142,6 +1150,7 @@ async function run() {
         grandTotal,
         finalPayAmount,
         dueAmount,
+        scheduleDate,
         profit,
         userName,
         userMail,
@@ -1281,6 +1290,9 @@ async function run() {
             $inc: {
               dueAmount: dueAmount,
             },
+            $set: {
+              scheduleDate, // Update the schedule date
+            },
             $push: {
               salesHistory: {
                 date,
@@ -1301,6 +1313,7 @@ async function run() {
           date,
           customerName,
           dueAmount,
+          scheduleDate,
           salesHistory: [
             {
               date,
