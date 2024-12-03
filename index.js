@@ -1048,8 +1048,12 @@ async function run() {
       const customerDue = await customerDueCollections.findOne({
         contactNumber: mobileNumber,
       });
+      const customerBalance = await borrowerCollections.findOne({
 
-      res.send({ customer, customerDue });
+        contactNumber: mobileNumber,
+      });
+
+      res.send({ customer, customerDue, customerBalance });
     });
 
 
@@ -1151,6 +1155,7 @@ async function run() {
         finalPayAmount,
         dueAmount,
         scheduleDate,
+        sourceOfPaid,
         profit,
         userName,
         userMail,
@@ -1283,7 +1288,7 @@ async function run() {
         customerSerial: findCustomer.serial,
       });
 
-      if (findCustomerBySerial) {
+      if (findCustomerBySerial && scheduleDate != "Invalid date") {
         await customerDueCollections.updateOne(
           { customerSerial: findCustomer.serial },
           {
