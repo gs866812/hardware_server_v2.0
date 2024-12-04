@@ -117,14 +117,15 @@ async function run() {
   try {
     const database = client.db("hardwareShop");
     const debtDB = client.db("debtMaintain");
+
     const borrowerCollections = debtDB.collection("borrowerList");
     const lenderCollections = debtDB.collection("lenderList");
 
-    const currentBalanceCollections = debtDB.collection("currentBalanceList");
-    const lenderBalanceCollections = debtDB.collection("lenderBalanceList");
+    const totalDebtBalanceCollections = debtDB.collection("currentBalanceList");
+    const totalLendBalanceCollections = debtDB.collection("lenderBalanceList");
 
-    const allTransactions = debtDB.collection("transactionList");
-    const allLenderTransactions = debtDB.collection("lenderTransactionList");
+    const allDebtTransactions = debtDB.collection("transactionList");
+    const allLendTransactions = debtDB.collection("lenderTransactionList");
 
 
 
@@ -1288,7 +1289,7 @@ async function run() {
         customerSerial: findCustomer.serial,
       });
 
-      if (findCustomerBySerial && scheduleDate != "Invalid date") {
+      if (findCustomerBySerial && dueAmount > 0) {
         await customerDueCollections.updateOne(
           { customerSerial: findCustomer.serial },
           {
@@ -1310,7 +1311,24 @@ async function run() {
             },
           }
         );
-      } else {
+      } else if (findCustomerBySerial && scheduleDate == 'Invalid date') {
+        await customerDueCollections.updateOne(
+          { customerSerial: findCustomer.serial },
+          {
+            $push: {
+              salesHistory: {
+                date,
+                invoiceNumber: nextInvoiceNumber,
+                grandTotal,
+                finalPayAmount,
+                dueAmount,
+                userName,
+              },
+            },
+          }
+        );
+      }
+      else {
         await customerDueCollections.insertOne({
           customerSerial: findCustomer.serial,
           customerAddress,
@@ -1349,13 +1367,48 @@ async function run() {
 
       await stockCollections.bulkWrite(bulkOps);
 
-      // Update the main balance
-      const existingBalance = await mainBalanceCollections.findOne();
-      const updatedMainBalance = existingBalance.mainBalance + finalPayAmount;
-      await mainBalanceCollections.updateOne(
-        {},
-        { $set: { mainBalance: updatedMainBalance } }
-      );
+
+
+      // if pay by advanced account then deduct from borrower account balance
+      if (sourceOfPaid == true) {
+        await totalDebtBalanceCollections.updateOne(
+          {},
+          {
+            $inc: {
+              totalBalance: -finalPayAmount,
+            },
+          }
+        );
+
+
+        await borrowerCollections.updateOne(
+          { contactNumber: customerMobile },
+          {
+            $inc: {
+              crBalance: - finalPayAmount,
+            },
+            $push: {
+              statements: {
+                date,
+                amount: finalPayAmount,
+                paymentMethod: "Sales",
+                note: nextInvoiceNumber,
+                userName,
+              },
+            },
+          }
+        );
+
+
+      } else {
+        // Update the main balance
+        const existingBalance = await mainBalanceCollections.findOne();
+        const updatedMainBalance = existingBalance.mainBalance + finalPayAmount;
+        await mainBalanceCollections.updateOne(
+          {},
+          { $set: { mainBalance: updatedMainBalance } }
+        );
+      }
 
       // Add the transaction to the transaction list with serial
       const recentSerialTransaction = await transactionCollections
@@ -3426,11 +3479,11 @@ async function run() {
           }
         );
 
-        // update currentBalanceCollections
+        // update totalDebtBalanceCollections
 
-        const currentBalance = await currentBalanceCollections.findOne({});
+        const currentBalance = await totalDebtBalanceCollections.findOne({});
         if (currentBalance) {
-          await currentBalanceCollections.updateOne(
+          await totalDebtBalanceCollections.updateOne(
 
             {},
             {
@@ -3438,7 +3491,7 @@ async function run() {
             }
           )
         } else {
-          await currentBalanceCollections.insertOne(
+          await totalDebtBalanceCollections.insertOne(
             {
               totalBalance: rcvAmount
             }
@@ -3486,7 +3539,7 @@ async function run() {
 
 
         //add debt transaction list with serial
-        const recentDebtSerialTransaction = await allTransactions
+        const recentDebtSerialTransaction = await allDebtTransactions
           .find()
           .sort({ serial: -1 })
           .limit(1)
@@ -3500,7 +3553,7 @@ async function run() {
           nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
         }
 
-        await allTransactions.insertOne({
+        await allDebtTransactions.insertOne({
           serial: nextDebtSerial,
           receiver: borrower.borrowerName,
           rcvAmount,
@@ -3573,7 +3626,7 @@ async function run() {
       if (userMail !== email) {
         return res.status(401).send({ message: "Forbidden Access" });
       }
-      const result = await currentBalanceCollections.find().toArray();
+      const result = await totalDebtBalanceCollections.find().toArray();
       res.send(result);
     });
 
@@ -3594,7 +3647,7 @@ async function run() {
           return res.status(404).json({ message: "Borrower not found" });
         }
 
-        // update currentBalanceCollections
+        // update totalDebtBalanceCollections
 
         const existingBalance = await mainBalanceCollections.findOne({});
         if (existingBalance.mainBalance >= payAmount) {
@@ -3608,9 +3661,9 @@ async function run() {
           return res.json("Insufficient balance");
         }
 
-        const currentBalance = await currentBalanceCollections.findOne({});
+        const currentBalance = await totalDebtBalanceCollections.findOne({});
         if (currentBalance) {
-          await currentBalanceCollections.updateOne(
+          await totalDebtBalanceCollections.updateOne(
 
             {},
             {
@@ -3664,7 +3717,7 @@ async function run() {
 
 
         //add transaction list with serial
-        const recentDebtSerialTransaction = await allTransactions
+        const recentDebtSerialTransaction = await allDebtTransactions
           .find()
           .sort({ serial: -1 })
           .limit(1)
@@ -3678,7 +3731,7 @@ async function run() {
           nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
         }
 
-        await allTransactions.insertOne({
+        await allDebtTransactions.insertOne({
           serial: nextDebtSerial,
           receiver: borrower.borrowerName,
           balance: payAmount,
@@ -3814,7 +3867,7 @@ async function run() {
 
 
         //add lend transaction list with serial
-        const recentLendSerialTransaction = await allLenderTransactions
+        const recentLendSerialTransaction = await allLendTransactions
           .find()
           .sort({ serial: -1 })
           .limit(1)
@@ -3828,7 +3881,7 @@ async function run() {
           nextDebtSerial = recentLendSerialTransaction[0].serial + 1;
         }
 
-        await allLenderTransactions.insertOne({
+        await allLendTransactions.insertOne({
           serial: nextDebtSerial,
           receiver: lender.lenderName,
           rcvAmount,
@@ -3865,7 +3918,7 @@ async function run() {
           return res.status(404).json({ message: "Lender not found" });
         }
 
-        // update currentBalanceCollections
+        // update totalDebtBalanceCollections
 
         const existingBalance = await mainBalanceCollections.findOne({});
 
@@ -3922,7 +3975,7 @@ async function run() {
 
 
         //add transaction list with serial
-        const recentDebtSerialTransaction = await allLenderTransactions
+        const recentDebtSerialTransaction = await allLendTransactions
           .find()
           .sort({ serial: -1 })
           .limit(1)
@@ -3936,7 +3989,7 @@ async function run() {
           nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
         }
 
-        await allTransactions.insertOne({
+        await allDebtTransactions.insertOne({
           serial: nextDebtSerial,
           receiver: lender.lenderName,
           balance: payAmount,
