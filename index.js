@@ -1157,6 +1157,7 @@ async function run() {
         dueAmount,
         scheduleDate,
         sourceOfPaid,
+        customerBalance,
         profit,
         userName,
         userMail,
@@ -1311,7 +1312,7 @@ async function run() {
             },
           }
         );
-      } else if (findCustomerBySerial && scheduleDate == 'Invalid date') {
+      } else if (findCustomerBySerial && !dueAmount) {
         await customerDueCollections.updateOne(
           { customerSerial: findCustomer.serial },
           {
@@ -1370,7 +1371,76 @@ async function run() {
 
 
       // if pay by advanced account then deduct from borrower account balance
-      if (sourceOfPaid == true) {
+      if (sourceOfPaid && customerBalance < finalPayAmount) {
+        await totalDebtBalanceCollections.updateOne(
+          {},
+          {
+            $inc: {
+              totalBalance: -customerBalance,
+            },
+          }
+        );
+
+
+        await borrowerCollections.updateOne(
+          { contactNumber: customerMobile },
+          {
+            $inc: {
+              crBalance: - customerBalance,
+            },
+            $push: {
+              statements: {
+                date,
+                amount: customerBalance,
+                paymentMethod: "Sales",
+                note: nextInvoiceNumber,
+                userName,
+              },
+            },
+          }
+        );
+
+
+
+        // Update the main balance
+        const existingBalance = await mainBalanceCollections.findOne();
+        const updatedMainBalance = existingBalance.mainBalance + (finalPayAmount - customerBalance);
+        await mainBalanceCollections.updateOne(
+          {},
+          { $set: { mainBalance: updatedMainBalance } }
+        );
+
+        const borrower = await borrowerCollections.findOne({
+          contactNumber: customerMobile,
+        });
+
+        //add debt transaction list with serial
+        const recentDebtSerialTransaction = await allDebtTransactions
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextDebtSerial = 10; // Default starting serial number
+        if (
+          recentDebtSerialTransaction.length > 0 &&
+          recentDebtSerialTransaction[0].serial
+        ) {
+          nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
+        }
+
+        await allDebtTransactions.insertOne({
+          serial: nextDebtSerial,
+          receiver: borrower.borrowerName,
+          rcvAmount: customerBalance,
+          note: nextInvoiceNumber,
+          date,
+          type: 'OUT',
+          userName,
+        });
+
+
+      } else if (sourceOfPaid && customerBalance >= finalPayAmount) {
         await totalDebtBalanceCollections.updateOne(
           {},
           {
@@ -1390,7 +1460,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                amount: finalPayAmount,
+                amount: customerBalance,
                 paymentMethod: "Sales",
                 note: nextInvoiceNumber,
                 userName,
@@ -1399,8 +1469,37 @@ async function run() {
           }
         );
 
+        const borrower = await borrowerCollections.findOne({
+          contactNumber: customerMobile,
+        });
 
-      } else {
+        //add debt transaction list with serial
+        const recentDebtSerialTransaction = await allDebtTransactions
+          .find()
+          .sort({ serial: -1 })
+          .limit(1)
+          .toArray();
+
+        let nextDebtSerial = 10; // Default starting serial number
+        if (
+          recentDebtSerialTransaction.length > 0 &&
+          recentDebtSerialTransaction[0].serial
+        ) {
+          nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
+        }
+
+        await allDebtTransactions.insertOne({
+          serial: nextDebtSerial,
+          receiver: borrower.borrowerName,
+          rcvAmount: finalPayAmount,
+          note: nextInvoiceNumber,
+          date,
+          type: 'OUT',
+          userName,
+        });
+
+      }
+      else {
         // Update the main balance
         const existingBalance = await mainBalanceCollections.findOne();
         const updatedMainBalance = existingBalance.mainBalance + finalPayAmount;
