@@ -4107,6 +4107,50 @@ async function run() {
       }
     });
 
+    // ------------------------------------------------------------------------------------------------------
+    app.get("/schedulePaymentDate", async (req, res) => {
+      const page = parseInt(req.query.page);
+      const size = parseInt(req.query.size);
+      const search = req.query.search || "";
+
+      let numericSearch = parseFloat(search);
+      if (isNaN(numericSearch)) {
+        numericSearch = null;
+      }
+
+      const query = search
+        ? {
+          $and: [
+            {
+              $or: [
+                { customerName: { $regex: new RegExp(search, "i") } },
+                { customerAddress: { $regex: new RegExp(search, "i") } },
+                { dueAmount: numericSearch ? numericSearch : { $exists: false } },
+                { contactNumber: { $regex: new RegExp(search, "i") } },
+                { scheduleDate: { $regex: new RegExp(search, "i") } },
+              ],
+            },
+            { scheduleDate: { $exists: true, $ne: "Invalid date" } }, // Only valid dates
+          ],
+        }
+        : { scheduleDate: { $exists: true, $ne: "Invalid date" } }; // Only valid dates for non-search requests
+
+      const result = await customerDueCollections
+        .find(query)
+        .skip((page - 1) * size)
+        .limit(size)
+        .sort({ _id: -1 })
+        .toArray();
+
+      const count = await customerDueCollections.countDocuments(query);
+      res.send({ result, count });
+    });
+
+
+
+    // ------------------------------------------------------------------------------------------------------
+
+
 
     // const negativeEntries = await stockCollections
     //   .find({ purchaseQuantity: { $lt: 0 } })
