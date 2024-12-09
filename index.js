@@ -3729,6 +3729,18 @@ async function run() {
       res.send(result);
     });
 
+    // get lend balance
+    app.get("/getLendBalance", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+      const result = await totalLendBalanceCollections.find().toArray();
+      res.send(result);
+    });
+
     // return money .................................................................................
     app.post("/debt/returnMoney", async (req, res) => {
       try {
@@ -3849,7 +3861,36 @@ async function run() {
       }
     });
 
-    // .......................................................................
+    // ........get borrower for excel...............................................................
+
+    app.get("/allBorrower", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      };
+      const result = await borrowerCollections
+        .find()
+        .sort({ _id: -1 })
+        .toArray();
+      res.send(result);
+    });
+
+    // Get lender due list for excel download
+    app.get("/allLender", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      };
+      const result = await lenderCollections
+        .find()
+        .sort({ _id: -1 })
+        .toArray();
+      res.send(result);
+    });
 
     //...................................... Lend system start here..........................................................
     // post lender
@@ -3883,14 +3924,50 @@ async function run() {
 
     // get lender____________________________________________________________________
     app.get("/lenderList", verifyToken, async (req, res) => {
+      const page = parseInt(req.query.page);
+      const size = parseInt(req.query.size);
+      const search = req.query.search || "";
+
+
       const userMail = req.query["userEmail"];
       const email = req.user["email"];
 
       if (userMail !== email) {
         return res.status(401).send({ message: "Forbidden Access" });
       }
-      const result = await lenderCollections.find().sort({ _id: -1 }).toArray();
-      res.send(result);
+
+
+      let numericSearch = parseFloat(search);
+      if (isNaN(numericSearch)) {
+        numericSearch = null;
+      }
+
+
+      const query = search
+        ? {
+          $or: [
+            {
+              lenderName: { $regex: new RegExp(search, "i") },
+            },
+            { serial: numericSearch ? numericSearch : { $exists: false } },
+            { contactNumber: { $regex: new RegExp(search, "i") } },
+            { address: { $regex: new RegExp(search, "i") } },
+          ],
+        }
+        : {};
+
+
+
+
+      const result = await lenderCollections
+        .find(query)
+        .skip((page - 1) * size)
+        .limit(size)
+        .sort({ _id: -1 })
+        .toArray();
+
+      const count = await lenderCollections.countDocuments(query);
+      res.send({ result, count });
     });
 
     // Lending money__________________________
@@ -3935,6 +4012,26 @@ async function run() {
             },
           }
         );
+
+        // update totalDebtBalanceCollections
+
+        const currentBalance = await totalLendBalanceCollections.findOne({});
+        if (currentBalance) {
+          await totalLendBalanceCollections.updateOne(
+
+            {},
+            {
+              $inc: { totalBalance: rcvAmount },
+            }
+          )
+        } else {
+          await totalLendBalanceCollections.insertOne(
+            {
+              totalBalance: rcvAmount
+            }
+          )
+        };
+
 
 
 
@@ -4017,7 +4114,21 @@ async function run() {
           return res.status(404).json({ message: "Lender not found" });
         }
 
-        // update totalDebtBalanceCollections
+        // update total Lend BalanceCollections
+
+        const currentBalance = await totalLendBalanceCollections.findOne({});
+        if (currentBalance) {
+          await totalLendBalanceCollections.updateOne(
+
+            {},
+            {
+              $inc: { totalBalance: - payAmount },
+            }
+          )
+        };
+
+
+        // update main balance
 
         const existingBalance = await mainBalanceCollections.findOne({});
 
@@ -4108,20 +4219,27 @@ async function run() {
     });
 
     // ------------------------------------------------------------------------------------------------------
-    app.get("/schedulePaymentDate", async (req, res) => {
+    app.get("/schedulePaymentDate", verifyToken, async (req, res) => {
       const page = parseInt(req.query.page);
       const size = parseInt(req.query.size);
       const search = req.query.search || "";
+
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
 
       let numericSearch = parseFloat(search);
       if (isNaN(numericSearch)) {
         numericSearch = null;
       }
 
-      const query = search
-        ? {
-          $and: [
-            {
+      const query = {
+        ...(
+          search
+            ? {
               $or: [
                 { customerName: { $regex: new RegExp(search, "i") } },
                 { customerAddress: { $regex: new RegExp(search, "i") } },
@@ -4129,11 +4247,13 @@ async function run() {
                 { contactNumber: { $regex: new RegExp(search, "i") } },
                 { scheduleDate: { $regex: new RegExp(search, "i") } },
               ],
-            },
-            { scheduleDate: { $exists: true, $ne: "Invalid date" } }, // Only valid dates
-          ],
-        }
-        : { scheduleDate: { $exists: true, $ne: "Invalid date" } }; // Only valid dates for non-search requests
+            }
+            : {}
+        ),
+        // Filter for valid `scheduleDate` and `dueAmount`
+        scheduleDate: { $exists: true, $ne: "Invalid date" },
+        dueAmount: { $exists: true, $gt: 0 },
+      };
 
       const result = await customerDueCollections
         .find(query)
@@ -4147,6 +4267,32 @@ async function run() {
     });
 
 
+
+
+    // ------------------------------------------------------------------------------------------------------
+    app.get("/debtHistory", verifyToken, async (req, res) => {
+      const serial = parseInt(req.query.serial);
+
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+
+      try {
+        const find = await borrowerCollections.findOne({ serial: serial });
+        if (find && find.statements) {
+          res.send(find.statements); // Send only the statements array
+        } else {
+          res.json("Statements not found");
+        }
+      } catch (error) {
+        res.json("Internal Server Error");
+      }
+    });
 
     // ------------------------------------------------------------------------------------------------------
 
