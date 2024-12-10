@@ -1391,7 +1391,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                amount: customerBalance,
+                amount: `- ${customerBalance}`,
                 paymentMethod: "Sales",
                 note: nextInvoiceNumber,
                 userName,
@@ -1460,7 +1460,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                amount: customerBalance,
+                amount: `- ${customerBalance}`,
                 paymentMethod: "Sales",
                 note: nextInvoiceNumber,
                 userName,
@@ -3791,7 +3791,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                payAmount,
+                amount: `- ${payAmount}`,
                 paymentMethod: returnMethod,
                 note: returnNote,
                 userName,
@@ -4004,7 +4004,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                amount: rcvAmount,
+                amount: `- ${rcvAmount}`,
                 paymentMethod: method,
                 note,
                 userName,
@@ -4148,7 +4148,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                payAmount,
+                amount: payAmount,
                 paymentMethod: returnMethod,
                 note: returnNote,
                 userName,
@@ -4294,6 +4294,30 @@ async function run() {
       }
     });
 
+    // ------------------------------------------------------------------------------------------------------
+    app.get("/lendHistory", verifyToken, async (req, res) => {
+      const serial = parseInt(req.query.serial);
+
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+
+      try {
+        const find = await lenderCollections.findOne({ serial: serial });
+        if (find && find.statements) {
+          res.send(find.statements); // Send only the statements array
+        } else {
+          res.json("Statements not found");
+        }
+      } catch (error) {
+        res.json("Internal Server Error");
+      }
+    });
     // ------------------------------------------------------------------------------------------------------
 
 
