@@ -2415,7 +2415,7 @@ async function run() {
     // customer payment start .................................................
     app.post("/payCustomer/:id", async (req, res) => {
       const id = parseInt(req.params.id);
-      const { date, paidAmount, paymentMethod, payNote, userName } = req.body;
+      const { date, paidAmount, paymentMethod, payNote, discount, scheduleDate, userName } = req.body;
 
       try {
         // Retrieve customer
@@ -2426,14 +2426,18 @@ async function run() {
         // Update customer due amount and push payment history if customer exists
         if (customer) {
           const updatedDueAmount = customer.dueAmount - paidAmount;
+          
           await customerDueCollections.updateOne(
             { customerSerial: id },
             {
-              $set: { dueAmount: updatedDueAmount },
+              $set: { 
+                dueAmount: updatedDueAmount,
+                scheduleDate,
+              },
               $push: {
                 paymentHistory: {
                   date,
-                  paidAmount,
+                  paidAmount: paidAmount - discount,
                   paymentMethod,
                   payNote,
                   userName,
@@ -2450,7 +2454,7 @@ async function run() {
         if (existingBalance) {
           await mainBalanceCollections.updateOne(
             {},
-            { $inc: { mainBalance: paidAmount } }
+            { $inc: { mainBalance: paidAmount - discount } }
           );
         } else {
           return res.status(500).json({ message: "Main balance record not found" });
@@ -2490,7 +2494,7 @@ async function run() {
 
         await transactionCollections.insertOne({
           serial: nextSerial,
-          totalBalance: paidAmount,
+          totalBalance: paidAmount - discount,
           note: `Received from ${findCustomer.customerName}`,
           date,
           type: "Received",
