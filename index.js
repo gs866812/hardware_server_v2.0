@@ -2426,11 +2426,11 @@ async function run() {
         // Update customer due amount and push payment history if customer exists
         if (customer) {
           const updatedDueAmount = customer.dueAmount - paidAmount;
-          
+
           await customerDueCollections.updateOne(
             { customerSerial: id },
             {
-              $set: { 
+              $set: {
                 dueAmount: updatedDueAmount,
                 scheduleDate,
               },
@@ -4321,6 +4321,21 @@ async function run() {
       } catch (error) {
         res.json("Internal Server Error");
       }
+    });
+    // ------------------------------------------------------------------------------------------------------
+    // Get all transaction for excel download
+    app.get("/getAllTransaction", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      };
+      const result = await transactionCollections
+        .find()
+        .sort({ _id: -1 })
+        .toArray();
+      res.send(result);
     });
     // ------------------------------------------------------------------------------------------------------
 
