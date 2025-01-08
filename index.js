@@ -1161,6 +1161,9 @@ async function run() {
         profit,
         userName,
         userMail,
+        labourCost,
+        transportCost,
+        prevDue,
       } = req.body;
 
       const isExist = await customerCollections.findOne({
@@ -1249,6 +1252,9 @@ async function run() {
         userName,
         productList: filteredProductList,
         invoiceNumber: nextInvoiceNumber,
+        labourCost,
+        transportCost,
+        prevDue,
       });
 
       const customerDue = await customerDueBalanceCollections.findOne({});
@@ -1460,7 +1466,7 @@ async function run() {
             $push: {
               statements: {
                 date,
-                amount: `- ${customerBalance}`,
+                amount: `- ${finalPayAmount}`,
                 paymentMethod: "Sales",
                 note: nextInvoiceNumber,
                 userName,
@@ -3237,9 +3243,9 @@ async function run() {
           return res.json({ message: "Invoice not found" });
         }
 
-        if (result.modified === "yes") {
-          return res.json({ message: "Invoice already modified" });
-        }
+        // if (result.modified === "yes") {
+        //   return res.json({ message: "Invoice already modified" });
+        // }
 
         const { _id, ...invoice } = result;
 
@@ -3249,10 +3255,25 @@ async function run() {
         if (!findInExisting) {
           await returnPurchaseCollections.insertOne(invoice);
         } else {
-          await returnPurchaseCollections.updateOne(
-            { invoiceNumber },
-            { $set: invoice }
-          );
+          const { finalPayAmount, ...otherInvoice } = invoice;
+          if (finalPayAmount > otherInvoice.grandTotal) {
+            await returnPurchaseCollections.updateOne(
+              { invoiceNumber },
+              {
+                $set: {
+                  ...otherInvoice,
+                  finalPayAmount: otherInvoice.grandTotal,
+                },
+              }
+            );
+          } else {
+            await returnPurchaseCollections.updateOne(
+              { invoiceNumber },
+              {
+                $set: { ...invoice },
+              }
+            );
+          }
         }
 
         if (result) {
@@ -3508,9 +3529,13 @@ async function run() {
         updatedInvoice.refund = refundAmount; // Set the refund amount
 
         // Update the invoice in the purchaseInvoiceCollections
+        const { modified, ...otherUpdates } = updatedInvoice;
         const result = await purchaseInvoiceCollections.updateOne(
           { invoiceNumber },
-          { $set: updatedInvoice }
+          {
+            $set: { ...otherUpdates },
+            $inc: { modified: 1 },
+          }
         );
 
         res.send(result);
@@ -4269,6 +4294,43 @@ async function run() {
       const count = await customerDueCollections.countDocuments(query);
       res.send({ result, count });
     });
+
+    // Get customer due
+    app.get("/getCustomerDue", verifyToken, async (req, res) => {
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+      const customerSerial = parseInt(req.query.customerID);
+      console.log("customer ID:", customerSerial);
+
+      // Check if the user is authorized
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+
+      try {
+        // Find the customer with the specific customerSerial
+        const customer = await customerDueCollections.findOne({ customerSerial });
+
+        if (customer) {
+          // Check if dueAmount exists and is greater than 0
+          if (customer.dueAmount > 0) {
+            res.send({ dueAmount: customer.dueAmount });
+          } else {
+            res.send({ message: "No due amount greater than 0" });
+          }
+        } else {
+          res.status(404).send({ message: "Customer not found" });
+        }
+      } catch (error) {
+        console.error("Error fetching customer due:", error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+
+
+
+
 
 
 
