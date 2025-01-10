@@ -117,7 +117,7 @@ async function run() {
   try {
     const database = client.db("hardwareShop");
     const debtDB = client.db("debtMaintain");
-
+    // *********************************************************************************************
     const borrowerCollections = debtDB.collection("borrowerList");
     const lenderCollections = debtDB.collection("lenderList");
 
@@ -127,6 +127,7 @@ async function run() {
     const allDebtTransactions = debtDB.collection("transactionList");
     const allLendTransactions = debtDB.collection("lenderTransactionList");
 
+    // **********************************************************************************************
 
 
     const categoryCollections = database.collection("categoryList");
@@ -164,6 +165,7 @@ async function run() {
     );
     const returnSalesCollections = database.collection("returnSalesList");
     const returnPurchaseCollections = database.collection("returnPurchaseList");
+    const dailySummaryCollections = database.collection("dailySummaryList");
 
     // jwt
     app.post("/jwt", (req, res) => {
@@ -652,7 +654,7 @@ async function run() {
       res.send(result);
     });
 
-    // costing balance
+    // costing balance****************************************************************
     app.post("/costingBalance", async (req, res) => {
       const { note, date, type, userName } = req.body;
       const parseAmount = parseFloat(req.body.confirmCostAmount);
@@ -692,6 +694,28 @@ async function run() {
         });
       }
 
+      // ***** Insert in summary collection
+      const isSummary = await dailySummaryCollections.findOne({ date: date });
+      if (isSummary) {
+        await dailySummaryCollections.updateOne(
+          { date },
+          {
+            $inc: {
+              totalCost: newCostingBalance,
+            },
+          }
+        );
+      } else {
+        await dailySummaryCollections.insertOne({
+          date,
+          totalCost: newCostingBalance,
+          totalSales: 0,
+          totalProfit: 0,
+        });
+      }
+
+      // *****
+
       //add transaction list with serial
       const recentSerialTransaction = await transactionCollections
         .find()
@@ -718,6 +742,7 @@ async function run() {
 
       res.send(result);
     });
+    // costing balance****************************************************************
 
     // show main balance only
     app.get("/mainBalance", verifyToken, async (req, res) => {
@@ -1256,6 +1281,27 @@ async function run() {
         transportCost,
         prevDue,
       });
+
+      const isSummary = await dailySummaryCollections.findOne({ date: date });
+      if (isSummary) {
+        await dailySummaryCollections.updateOne(
+          { date },
+          {
+            $inc: {
+              totalSales: grandTotal,
+              totalProfit: profit,
+            },
+          }
+        );
+      } else {
+        await dailySummaryCollections.insertOne({
+          date,
+          totalSales: grandTotal,
+          totalProfit: profit,
+          totalCost: 0,
+        });
+      }
+
 
       const customerDue = await customerDueBalanceCollections.findOne({});
       if (customerDue) {
@@ -4300,7 +4346,6 @@ async function run() {
       const userMail = req.query["userEmail"];
       const email = req.user["email"];
       const customerSerial = parseInt(req.query.customerID);
-      console.log("customer ID:", customerSerial);
 
       // Check if the user is authorized
       if (userMail !== email) {
@@ -4398,6 +4443,52 @@ async function run() {
         .sort({ _id: -1 })
         .toArray();
       res.send(result);
+    });
+    // ------------------------------------------------------------------------------------------------------
+    app.get("/getDailySummary", verifyToken, async (req, res) => {
+      const page = parseInt(req.query.page);
+      const size = parseInt(req.query.size);
+      const search = req.query.search || "";
+
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+
+
+      let numericSearch = parseFloat(search);
+      if (isNaN(numericSearch)) {
+        numericSearch = null;
+      }
+
+      const query = search
+        ? {
+          $or: [
+            {
+              date: { $regex: new RegExp(search, "i") },
+            },
+            { totalSales: numericSearch ? numericSearch : { $exists: false } },
+            { totalProfit: numericSearch ? numericSearch : { $exists: false } },
+            { totalCost: numericSearch ? numericSearch : { $exists: false } },
+
+          ],
+        }
+        : {};
+
+
+
+
+      const result = await dailySummaryCollections
+        .find(query)
+        .skip((page - 1) * size)
+        .limit(size)
+        .sort({ _id: -1 })
+        .toArray();
+
+      const count = await dailySummaryCollections.countDocuments(query);
+      res.send({ result, count });
     });
     // ------------------------------------------------------------------------------------------------------
 
