@@ -1282,6 +1282,8 @@ async function run() {
         prevDue,
       });
 
+
+
       const isSummary = await dailySummaryCollections.findOne({ date: date });
       if (isSummary) {
         await dailySummaryCollections.updateOne(
@@ -1342,6 +1344,8 @@ async function run() {
         customerSerial: findCustomer.serial,
       });
 
+
+
       if (findCustomerBySerial && dueAmount > 0) {
         await customerDueCollections.updateOne(
           { customerSerial: findCustomer.serial },
@@ -1362,6 +1366,7 @@ async function run() {
                 userName,
               },
             },
+
           }
         );
       } else if (findCustomerBySerial && !dueAmount) {
@@ -1452,6 +1457,39 @@ async function run() {
           }
         );
 
+        await customerDueCollections.updateOne(
+          { contactNumber: customerMobile },
+          {
+            $push: {
+              statement: {
+                $each: [
+                  {
+                    date,
+                    invoiceNumber: nextInvoiceNumber,
+                    invoiceAmount: grandTotal,
+                    drBalance: customerBalance,
+                    crBalance: 0,
+                    balance: 0,
+                    type: "P Account",
+                    userName,
+                  },
+                  {
+                    date,
+                    invoiceNumber: nextInvoiceNumber,
+                    invoiceAmount: grandTotal,
+                    drBalance: grandTotal - customerBalance,
+                    crBalance: 0,
+                    balance: 0,
+                    type: "Cash",
+                    userName,
+                  },
+                ],
+              },
+            },
+          }
+        );
+
+
 
 
         // Update the main balance
@@ -1521,6 +1559,24 @@ async function run() {
           }
         );
 
+        await customerDueCollections.updateOne(
+          { contactNumber: customerMobile },
+          {
+            $push: {
+              statement: {
+                date,
+                invoiceNumber: nextInvoiceNumber,
+                invoiceAmount: grandTotal,
+                drBalance: finalPayAmount,
+                crBalance: 0,
+                balance: customerBalance - finalPayAmount,
+                type: "Account",
+                userName,
+              },
+            },
+          }
+        );
+
         const borrower = await borrowerCollections.findOne({
           contactNumber: customerMobile,
         });
@@ -1558,6 +1614,24 @@ async function run() {
         await mainBalanceCollections.updateOne(
           {},
           { $set: { mainBalance: updatedMainBalance } }
+        );
+
+        await customerDueCollections.updateOne(
+          { contactNumber: customerMobile },
+          {
+            $push: {
+              statement: {
+                date,
+                invoiceNumber: nextInvoiceNumber,
+                invoiceAmount: grandTotal,
+                drBalance: finalPayAmount,
+                crBalance: 0,
+                balance: customerBalance,
+                type: "Cash",
+                userName,
+              },
+            },
+          }
         );
       }
 
@@ -2202,6 +2276,34 @@ async function run() {
 
       res.send(customer);
     });
+
+    // get statement ****************************************************************
+
+    app.get("/singleCustomer/statement/:id", verifyToken, async (req, res) => {
+      const id = parseInt(req.params.id);
+      // const { searchTerm, page = 1, limit = 10 } = req.query; 
+
+      const userMail = req.query["userEmail"];
+      const email = req.user["email"];
+
+      if (userMail !== email) {
+        return res.status(401).send({ message: "Forbidden Access" });
+      }
+
+      const customer = await customerDueCollections.findOne({
+        customerSerial: id,
+      });
+
+      if (!customer) {
+        return res.status(404).send({ message: "Customer not found" });
+      }
+
+
+      res.send(customer);
+    });
+
+
+
     // GPT end single customer
 
     // single customer ledger start ...............................................
@@ -3627,7 +3729,7 @@ async function run() {
     // borrowerCollections
     app.post("/debt/receivedMoney", async (req, res) => {
       try {
-        const { date, rcvAmount, serial, note, method, userName } = req.body;
+        const { date, rcvAmount, serial, contactNumber, note, method, userName } = req.body;
 
         const borrower = await borrowerCollections.findOne({
           serial,
@@ -3652,6 +3754,27 @@ async function run() {
             },
           }
         );
+
+        // -------
+        const cBalance = await borrowerCollections.findOne({ contactNumber });
+        await customerDueCollections.updateOne(
+          { contactNumber },
+          {
+            $push: {
+              statement: {
+                date,
+                invoiceNumber: null,
+                invoiceAmount: null,
+                drBalance: 0,
+                crBalance: rcvAmount,
+                balance: cBalance?.crBalance || rcvAmount,
+                type: "Credit",
+                userName,
+              },
+            },
+          }
+        );
+        // -------
 
         // update totalDebtBalanceCollections
 
@@ -3819,7 +3942,7 @@ async function run() {
     // return money .................................................................................
     app.post("/debt/returnMoney", async (req, res) => {
       try {
-        const { date, payAmount, returnNote, serial, returnMethod, userName } = req.body;
+        const { date, payAmount, returnNote, serial, contactNumber, returnMethod, userName } = req.body;
 
         const borrower = await borrowerCollections.findOne({
           serial,
@@ -3862,13 +3985,35 @@ async function run() {
         await borrowerCollections.updateOne(
           { serial: borrower.serial },
           {
-            $inc: { crBalance: -payAmount, drBalance: payAmount },
+            $inc: {
+              crBalance: -payAmount,
+              drBalance: payAmount
+            },
             $push: {
               statements: {
                 date,
                 amount: `- ${payAmount}`,
                 paymentMethod: returnMethod,
                 note: returnNote,
+                userName,
+              },
+            },
+          }
+        );
+
+        const cBalance = await borrowerCollections.findOne({ contactNumber });
+        await customerDueCollections.updateOne(
+          { contactNumber },
+          {
+            $push: {
+              statement: {
+                date,
+                invoiceNumber: null,
+                invoiceAmount: null,
+                drBalance: payAmount,
+                crBalance: 0,
+                balance: cBalance.crBalance,
+                type: "Return",
                 userName,
               },
             },
