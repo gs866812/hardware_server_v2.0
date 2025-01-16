@@ -1470,17 +1470,17 @@ async function run() {
                     drBalance: customerBalance,
                     crBalance: 0,
                     balance: 0,
-                    type: "P Account",
+                    type: "Purchase",
                     userName,
                   },
                   {
                     date,
                     invoiceNumber: nextInvoiceNumber,
                     invoiceAmount: grandTotal,
-                    drBalance: grandTotal - customerBalance,
+                    drBalance: 0,
                     crBalance: 0,
                     balance: 0,
-                    type: "Cash",
+                    type: "Purchase",
                     userName,
                   },
                 ],
@@ -1488,6 +1488,8 @@ async function run() {
             },
           }
         );
+
+
 
 
 
@@ -1570,12 +1572,13 @@ async function run() {
                 drBalance: finalPayAmount,
                 crBalance: 0,
                 balance: customerBalance - finalPayAmount,
-                type: "Account",
+                type: "Purchase",
                 userName,
               },
             },
           }
         );
+
 
         const borrower = await borrowerCollections.findOne({
           contactNumber: customerMobile,
@@ -1624,10 +1627,10 @@ async function run() {
                 date,
                 invoiceNumber: nextInvoiceNumber,
                 invoiceAmount: grandTotal,
-                drBalance: finalPayAmount,
+                drBalance: 0,
                 crBalance: 0,
                 balance: customerBalance,
-                type: "Cash",
+                type: "Purchase",
                 userName,
               },
             },
@@ -2481,95 +2484,13 @@ async function run() {
     });
 
 
-    // Pay customer due by account
-    app.post("/payCustomerByAccount/:id", async (req, res) => {
-      const id = parseInt(req.params.id);
-      const { date, paidAmount, paymentMethod, payNote, userName } = req.body;
 
-      try {
-        // Retrieve customer
-        const customer = await customerDueCollections.findOne({
-          customerSerial: id,
-        });
-
-        // Update customer due amount, account balance, and push payment history if customer exists
-        if (customer) {
-          const updatedDueAmount = customer.dueAmount - paidAmount;
-          await customerDueCollections.updateOne(
-            { customerSerial: id },
-            {
-              $set: { dueAmount: updatedDueAmount },
-              $inc: { acBalance: -paidAmount },
-              $push: {
-                paymentHistory: {
-                  date,
-                  paidAmount,
-                  paymentMethod,
-                  payNote,
-                  userName,
-                },
-              },
-            }
-          );
-        } else {
-          return res.status(404).json({ message: "Customer not found" });
-        }
-
-        // Update customer due balance
-        const customerDue = await customerDueBalanceCollections.findOne({});
-        if (customerDue) {
-          await customerDueBalanceCollections.updateOne(
-            {},
-            {
-              $inc: {
-                customerDueBalance: -paidAmount,
-              },
-            }
-          );
-        } else {
-          return res.status(500).json({ message: "Customer due balance record not found" });
-        }
-
-        // Add transaction record
-        const findCustomer = await customerCollections.findOne({ serial: id });
-        if (!findCustomer) {
-          return res.status(404).json({ message: "Customer not found in customerCollections" });
-        }
-
-        const recentSerialTransaction = await transactionCollections
-          .find()
-          .sort({ serial: -1 })
-          .limit(1)
-          .toArray();
-
-        let nextSerial = 10; // Default starting serial number
-        if (recentSerialTransaction.length > 0 && recentSerialTransaction[0].serial) {
-          nextSerial = recentSerialTransaction[0].serial + 1;
-        }
-
-        await transactionCollections.insertOne({
-          serial: nextSerial,
-          totalBalance: paidAmount,
-          note: `Received from ${findCustomer.customerName}`,
-          date,
-          type: "Transfer",
-          userName,
-        });
-
-        // Send success response after all operations complete successfully
-        res.status(200).json("success");
-
-      } catch (error) {
-        console.error("Error processing payment by account:", error);
-        res.status(500).json({ message: "Failed to process payment by account", error });
-      }
-    });
 
 
     // customer payment start .................................................
     app.post("/payCustomer/:id", async (req, res) => {
       const id = parseInt(req.params.id);
-      const { date, paidAmount, paymentMethod, payNote, discount, scheduleDate, userName } = req.body;
+      const { date, paidAmount, byAccount, paymentMethod, payNote, discount, scheduleDate, userName } = req.body;
 
       try {
         // Retrieve customer
@@ -2599,20 +2520,98 @@ async function run() {
               },
             }
           );
-        } else {
-          return res.status(404).json({ message: "Customer not found" });
         }
 
-        // Update main balance
-        const existingBalance = await mainBalanceCollections.findOne();
-        if (existingBalance) {
-          await mainBalanceCollections.updateOne(
-            {},
-            { $inc: { mainBalance: paidAmount - discount } }
+
+        if (byAccount) {
+          const decrementValue = paidAmount - discount;
+          await borrowerCollections.updateOne(
+            { contactNumber: customer?.contactNumber },
+            {
+              $inc: { crBalance: -decrementValue },
+              $push: {
+                statements: {
+                  date,
+                  amount: `- ${paidAmount}`,
+                  paymentMethod: "-",
+                  note: "Due paid",
+                  userName,
+                },
+              },
+            }
           );
+
+          const currentBalance = await totalDebtBalanceCollections.findOne({});
+          if (currentBalance) {
+            const decrementValue = paidAmount - discount;
+            await totalDebtBalanceCollections.updateOne(
+
+              {},
+              {
+                $inc: { totalBalance: -decrementValue },
+              }
+            )
+          }
+
+          // push the transaction in statement
+          const cBalance = await borrowerCollections.findOne({ contactNumber: customer?.contactNumber });
+          await customerDueCollections.updateOne(
+            { contactNumber: customer?.contactNumber },
+            {
+              $push: {
+                statement: {
+                  date,
+                  invoiceNumber: null,
+                  invoiceAmount: null,
+                  drBalance: paidAmount - discount,
+                  crBalance: 0,
+                  balance: cBalance?.crBalance,
+                  type: "Due paid",
+                  userName,
+                },
+              },
+            }
+          );
+
+          //add debt transaction list with serial
+          const recentDebtSerialTransaction = await allDebtTransactions
+            .find()
+            .sort({ serial: -1 })
+            .limit(1)
+            .toArray();
+
+          let nextDebtSerial = 10; // Default starting serial number
+          if (
+            recentDebtSerialTransaction.length > 0 &&
+            recentDebtSerialTransaction[0].serial
+          ) {
+            nextDebtSerial = recentDebtSerialTransaction[0].serial + 1;
+          }
+
+          await allDebtTransactions.insertOne({
+            serial: nextDebtSerial,
+            receiver: customer?.customerName,
+            rcvAmount: paidAmount-discount,
+            note: "Due paid",
+            date,
+            type: 'OUT',
+            userName,
+          });
+
+
         } else {
-          return res.status(500).json({ message: "Main balance record not found" });
+          // Update main balance
+          const existingBalance = await mainBalanceCollections.findOne();
+
+          if (existingBalance) {
+            await mainBalanceCollections.updateOne(
+              {},
+              { $inc: { mainBalance: paidAmount - discount } }
+            );
+          }
         }
+
+
 
         // Update customer due balance
         const customerDue = await customerDueBalanceCollections.findOne({});
@@ -2625,8 +2624,6 @@ async function run() {
               },
             }
           );
-        } else {
-          return res.status(500).json({ message: "Customer due balance record not found" });
         }
 
         // Add transaction record
