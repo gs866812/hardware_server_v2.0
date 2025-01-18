@@ -1480,7 +1480,7 @@ async function run() {
                     drBalance: 0,
                     crBalance: 0,
                     balance: 0,
-                    type: "Purchase",
+                    type: "Purchase on cash",
                     userName,
                   },
                 ],
@@ -1630,7 +1630,7 @@ async function run() {
                 drBalance: 0,
                 crBalance: 0,
                 balance: customerBalance,
-                type: "Purchase",
+                type: "Purchase on cash",
                 userName,
               },
             },
@@ -2280,30 +2280,106 @@ async function run() {
       res.send(customer);
     });
 
+    // get statement for download range base /downloadStatement****************************************************************
+    app.get("/downloadStatement/:id", verifyToken, async (req, res) => {
+      try {
+        const id = parseInt(req.params.id);
+        const startDate = parseCustomDate(req.query.beginningDate); // Parse start date
+        const endDate = parseCustomDate(req.query.endingDate); // Parse end date
+        const userMail = req.query["userEmail"];
+        const email = req.user["email"];
+
+        if (userMail !== email) {
+          return res.status(401).send({ message: "Forbidden Access" });
+        }
+
+        // Find the customer document
+        const customer = await customerDueCollections.findOne({ customerSerial: id });
+
+        if (!customer) {
+          return res.status(404).send({ message: "Customer not found" });
+        }
+
+        // Filter the statement array based on date range
+        const filteredStatement = customer.statement.filter((entry) => {
+          const entryDate = parseCustomDate(entry.date);
+          return entryDate >= startDate && entryDate <= endDate;
+        });
+
+        res.status(200).send(filteredStatement); // Send the filtered array
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
+      }
+    });
+
+    // Helper function to parse custom date format (dd.MM.yyyy)
+    function parseCustomDate(dateString) {
+      const [day, month, year] = dateString.split(".").map(Number);
+      return new Date(Date.UTC(year, month - 1, day)); // Ensures UTC midnight
+    }
+
+
     // get statement ****************************************************************
 
     app.get("/singleCustomer/statement/:id", verifyToken, async (req, res) => {
-      const id = parseInt(req.params.id);
-      // const { searchTerm, page = 1, limit = 10 } = req.query; 
+      try {
+        const id = parseInt(req.params.id);
+        const page = parseInt(req.query.page) || 1;
+        const size = parseInt(req.query.size) || 20;
+        const search = req.query.search || "";
 
-      const userMail = req.query["userEmail"];
-      const email = req.user["email"];
+        const userMail = req.query["userEmail"];
+        const email = req.user["email"];
 
-      if (userMail !== email) {
-        return res.status(401).send({ message: "Forbidden Access" });
+        if (userMail !== email) {
+          return res.status(401).send({ message: "Forbidden Access" });
+        }
+
+        if (isNaN(id)) {
+          return res.status(400).send({ message: "Invalid customer ID" });
+        }
+
+        // Find the customer document
+        const customer = await customerDueCollections.findOne({ customerSerial: id });
+
+        if (!customer) {
+          return res.status(404).send({ message: "Customer not found" });
+        }
+
+        // Filter the `statement` array based on the search condition
+        let filteredStatements = customer.statement || [];
+        if (search) {
+          filteredStatements = filteredStatements.filter((entry) =>
+            Object.values(entry).some(
+              (value) =>
+                typeof value === "string" &&
+                value.toLowerCase().includes(search.toLowerCase())
+            )
+          );
+        }
+
+        // Get the total length of the filtered array
+        const total = filteredStatements.length;
+
+        // Paginate the filtered array
+        const paginatedStatements = filteredStatements.slice(
+          (page - 1) * size,
+          page * size
+        );
+
+        // Respond with the paginated results and metadata
+        res.send({
+          customer,
+          paginatedStatements,
+          total
+        });
+      } catch (error) {
+        console.error(error);
+        res.status(500).send({ message: "Internal Server Error" });
       }
-
-      const customer = await customerDueCollections.findOne({
-        customerSerial: id,
-      });
-
-      if (!customer) {
-        return res.status(404).send({ message: "Customer not found" });
-      }
-
-
-      res.send(customer);
     });
+
 
 
 
@@ -2591,7 +2667,7 @@ async function run() {
           await allDebtTransactions.insertOne({
             serial: nextDebtSerial,
             receiver: customer?.customerName,
-            rcvAmount: paidAmount-discount,
+            rcvAmount: paidAmount - discount,
             note: "Due paid",
             date,
             type: 'OUT',
@@ -2609,6 +2685,26 @@ async function run() {
               { $inc: { mainBalance: paidAmount - discount } }
             );
           }
+
+          // push the transaction in statement
+          const cBalance = await borrowerCollections.findOne({ contactNumber: customer?.contactNumber });
+          await customerDueCollections.updateOne(
+            { contactNumber: customer?.contactNumber },
+            {
+              $push: {
+                statement: {
+                  date,
+                  invoiceNumber: null,
+                  invoiceAmount: null,
+                  drBalance: paidAmount - discount,
+                  crBalance: 0,
+                  balance: cBalance?.crBalance,
+                  type: "Due paid by cash",
+                  userName,
+                },
+              },
+            }
+          );
         }
 
 
@@ -2749,41 +2845,6 @@ async function run() {
         }
         : {};
 
-      // update stock
-      app.put("/updateStock/:id", async (req, res) => {
-        const { id } = req.params;
-        const { purchaseQuantity, purchasePrice } = req.body;
-
-        try {
-          // Validate ID format
-          if (!ObjectId.isValid(id)) {
-            return res.status(400).json({ message: "Invalid ID format" });
-          }
-
-          // Update the stock item with the given ID
-          const updatedStock = await stockCollections.findOneAndUpdate(
-            { _id: new ObjectId(id) }, // Wrap id with ObjectId
-            {
-              $set: {
-                purchaseQuantity,
-                purchasePrice,
-              },
-            },
-            { new: true, returnDocument: "after" } // Return the updated document in the response
-          );
-
-          if (!updatedStock) {
-            return res.status(404).json({ message: "Stock item not found" });
-          }
-
-          res.status(200).json({ message: "Stock updated successfully", updatedStock });
-        } catch (error) {
-          console.error("Error updating stock:", error);
-          res.status(500).json({ message: "Failed to update stock" });
-        }
-      });
-
-
       // Get paginated results
       const result = await stockCollections
         .find(query)
@@ -2809,6 +2870,41 @@ async function run() {
       // Send back paginated results, total count, and total stock
       res.send({ result, count, totalStock });
     });
+
+    // update stock
+    app.put("/updateStock/:id", async (req, res) => {
+      const { id } = req.params;
+      const { purchaseQuantity, purchasePrice } = req.body;
+
+      try {
+        // Validate ID format
+        if (!ObjectId.isValid(id)) {
+          return res.status(400).json({ message: "Invalid ID format" });
+        }
+
+        // Update the stock item with the given ID
+        const updatedStock = await stockCollections.findOneAndUpdate(
+          { _id: new ObjectId(id) }, // Wrap id with ObjectId
+          {
+            $set: {
+              purchaseQuantity,
+              purchasePrice,
+            },
+          },
+          { new: true, returnDocument: "after" } // Return the updated document in the response
+        );
+
+        if (!updatedStock) {
+          return res.status(404).json({ message: "Stock item not found" });
+        }
+
+        res.status(200).json({ message: "Stock updated successfully", updatedStock });
+      } catch (error) {
+        console.error("Error updating stock:", error);
+        res.status(500).json({ message: "Failed to update stock" });
+      }
+    });
+
     // add customer.....................................
     app.post("/addCustomer", async (req, res) => {
       const customerInfo = req.body;
